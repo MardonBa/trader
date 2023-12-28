@@ -36,12 +36,12 @@ for other questions relating to the polygon api, visit https://polygon.io/docs/s
 """
 
 class GetData:
-    def __init__(self):
-        self.POLYGON_API_KEY = 'Sl2fNRJQfFgu9Z6jS5vNmVzJ9zvnM1hP'
+    def __init__(self, polygon_api_key, finnhub_api_key):
+        self.POLYGON_API_KEY = polygon_api_key
         self.POLYGON_API_AGG_BASE_URL = 'https://api.polygon.io/v2/aggs'
         self.POLYGON_API_DAILY_BASE_URL = 'https://api.polygon.io/v1/open-close'
 
-        self.FINNHUB_API_KEY = 'cluhrs1r01qv6nfuall0cluhrs1r01qv6nfuallg'
+        self.FINNHUB_API_KEY = finnhub_api_key
         self.finnhub_client = finnhub.Client(api_key=self.FINNHUB_API_KEY)
 
     def _create_api_call(self, query, params, call_type): ## type is daily, daily_aggregate, or time_period_aggregate
@@ -204,12 +204,15 @@ class SortData: ## Used to get the historical data necessary
         return common_data
 
 
+
         
     def get_and_sort_initial_data(self):
         data_df = pd.DataFrame()
-        first_call = True
+        ## TODO Split into 3 functions for greater modularity and easier testing, etc
+        ## TODO Write tests (lame)
 
-
+        ## TODO Change the timing so that it's 60 seconds from the first call using time.time() differences, instead of 60 seconds from the last call (saves time)
+        ## TODO Make Finnhub API calls after the 5 polygon api calls to save more time
         ###############################################
         ## Get the polygon api data
         ###############################################
@@ -310,17 +313,31 @@ class SortData: ## Used to get the historical data necessary
             raise Exception('Something went wrong with downloading the VIX History')
         
         else:
+            time_offset = 730 ## Fix for adding 1 day to earliest_date, which was giving an error for some reason
+                              ## Subtract one every time the while loop is run
             vix_data = pd.read_csv('VIX_History.csv')
-            earliest_date = str(date.today() - timedelta(days=730)) ## 2 years before, consistent with polygon data
-            print(earliest_date)
+            print(vix_data['DATE'])
 
+            while True: ## Loop gets broken out of once the earliest possible date is found
+                earliest_date = str((date.today() - timedelta(days=time_offset)).strftime('%m/%d/%Y')) ## Starts at 2 years + 1 day before, consistent with polygon data
+                print(f'\n{earliest_date}')
+                if earliest_date in set(vix_data['DATE']):
+                    slicing_index = vix_data.index.get_loc(vix_data[vix_data['DATE'] == earliest_date].index[0])
+                    break
+                time_offset -= 1
 
-            found = False
-            if earliest_date in set(vix_data['DATE']):
-                slicing_index = vix_data.index.get_loc(vix_data[vix_data['DATE'] == earliest_date].index[0])
-            else: 
-                while found == False:
-                    earliest_date = datetime.strptime(earliest_date, '')## Format string within the parentheses
+            vix_data = vix_data[slicing_index:] ## Slices the dataframe so that it only contains data from the last 2 years
+            print(vix_data)
+
+            for index, row in vix_data.iterrows(): ## Index not needed
+                time_diff = self._get_time_diff(date.today().strftime('%m/%d/%Y'), '%m/%d/%Y', row['DATE'], '%m/%d/%Y') ## time_diff is fine to be reassigned
+                ## Set the same value for each ticker
+                data_df[f'vix_open_{time_diff}_days_before'] = [row['OPEN'] for _ in range(len(data_df))]
+                data_df[f'vix_close_{time_diff}_days_before'] = [row['CLOSE'] for _ in range(len(data_df))]
+                data_df[f'vix_high_{time_diff}_days_before'] = [row['HIGH'] for _ in range(len(data_df))]
+                data_df[f'vix_low_{time_diff}_days_before'] = [row['LOW'] for _ in range(len(data_df))]
+                
+
 
 
             
