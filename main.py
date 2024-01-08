@@ -7,6 +7,7 @@ polygon_api_key, finnhub_api_key = 'Sl2fNRJQfFgu9Z6jS5vNmVzJ9zvnM1hP', 'cluhrs1r
 data = GetData(polygon_api_key, finnhub_api_key) ## Instance of the GetData class, to be passed into the SortData class to be called
 
 data_sorted = SortData(data)
+#data_sorted.get_and_sort_initial_data()
 data_sorted.get_and_sort_initial_data()
 
 
