@@ -130,7 +130,6 @@ class SortData: ## Used to get the historical data necessary
         earliest_possible_date = self._get_earliest_possible_date(todays_date)
 
         for single_date in self._daterange(earliest_possible_date, todays_date): ## Iterate over all possible dates
-            single_date = datetime.strftime(datetime.strptime(single_date, '%Y-%m-%d'), '%m-%d-%Y') ## Chagnes the date format fof consistency
             queries.append({ 
                 'date': single_date, 
                 'adjusted': 'true'  ## String for the future api call
@@ -163,7 +162,7 @@ class SortData: ## Used to get the historical data necessary
         return time_diff
 
     def _add_time_diff(self, original, time):
-        new_str = f'{original}_{time}_days_before'
+        new_str = f'{original}_{time}_market_days_before'
         return new_str
     
     def _rename_cols(self, df, time_diff): ## Calls the above function in order to properly rename the columns
@@ -208,14 +207,11 @@ class SortData: ## Used to get the historical data necessary
     def _get_index_by_row(self, df, row, value):
         return df.index.get_loc(df[df[row] == value].index[0])
 
-    def make_polygon_call(self, query, current_date):
+    def make_polygon_call(self, query, time_diff):
         ## query is a query dict from self._build_daily_agg_query, each one is iterated through and passed into this function
         ## current_date is the date to subtract from (daily_agg_queries[-1]['date'])
 
         df = pd.DataFrame()
-        
-        time_diff = self._get_time_diff(str(current_date), '%Y-%m-%d', query['date'], '%Y-%m-%d' )
-        print(f'time difference: {time_diff}')
 
         data = self.data_class.get_polygon_data(query, 'daily_agg')
         if data['queryCount'] == 0: return None ## Allows for skipping over weekends/holidays
@@ -270,7 +266,7 @@ class SortData: ## Used to get the historical data necessary
 
             df = df[slicing_index:] ## Slices the dataframe so that it only contains data from the last 2 years
             df['DATE'] = df['DATE'].str.replace('/', '-') ## Makes sure dates are in a consistent format
-            print(df)
+            df['DATE'] = pd.to_datetime(df['DATE'], format='%m-%d-%Y').dt.strftime('%Y-%m-%d') ## Chagnes the date format fof consistency
 
             return df
 
@@ -295,22 +291,18 @@ class SortData: ## Used to get the historical data necessary
         ## Get the VIX historical data, add it to the df at the end
         vix_data = self.make_vix_call()
         market_open_dates = vix_data['DATE'].tolist()
-        print(market_open_dates)
         ## TODO filter queries so that only dates in market_open_dates are included
         ## TODO reverse the list of queries at the end, so that market days can be counted using i in the for loop
 
         for query in queries: ## Queries are in format {date: YYYY-MM-DD, adjusted: bool}
             if query['date'] not in set(market_open_dates): ## Checks to see if the market is NOT open on the given date
-                queries.remove(query) ## TODO fix date formats so that they're consistent
-        print(len(queries))
-        print(len(market_open_dates))
+                queries.remove(query)
 
-        while query_end_index < 5: ## len(queries)
+        while query_end_index < 100: ## len(queries)
 
             ## Call the polygon API data, add it to the df
             for i in range(query_start_index, query_end_index+1):
-                print(queries[i])
-                polygon_data = self.make_polygon_call(queries[i], date.today())
+                polygon_data = self.make_polygon_call(queries[i], i)
                 if polygon_data is None or polygon_data.empty: continue ## Skips over weekends/holidays where there is no data to be collected
                 ## ! Should be deprecated when I add market day counting based on VIX History
                 elif data_df.empty:
@@ -355,11 +347,11 @@ class SortData: ## Used to get the historical data necessary
             financial_start_index += 60
             financial_end_index += 60
 
-            #time.sleep(60)
+            time.sleep(60)
         
        
         ## Get the VIX historical data, add it to the df
-        vix_data = vix_data[::-1] ## Reverses the dataframe to make counting market days easier
+        vix_data = vix_data[::-1].reset_index() ## Reverses the dataframe to make counting market days easier
         for index, row in vix_data.iterrows(): ## Index not needed
             ## Set the same value for each ticker
             data_df[f'vix_open_{index}_market_days_before'] = [row['OPEN'] for _ in range(len(data_df))]
@@ -371,15 +363,14 @@ class SortData: ## Used to get the historical data necessary
             
         
         print(data_df.columns)
-        print(data_df.head(10))
+        print(data_df.head(50))
         print(len(data_df))
         #for col in data_df.columns:
             #print(f'{col}: {data_df[col].isna().sum()}')
         
 
         ## TODO Write functions for getting today's info for adding to df (might involve refactoring other methods)
-        ## TODO Change day differences to be market days (maybe get vix data early and then add it to the df later, to know how many days the market was open)
-        ## TODO Use VIX dates to only make queries where the market was open to make it faster
-        ## TODO Change 52 week high and low date to market days since
+        ## TODO Write code that considers what happens if the financial data still needs to be fetched but the historical data is done (should be an easy conditional) (or vice versa)
+        ## TODO Write a diagnostic function that finds what filtering condition for amount of financial data results in the least loss
 
         ## TODO for functions getting today's info, consider how to handle cases where there is extra data not in the working df, or missing data
