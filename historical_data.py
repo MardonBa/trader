@@ -1,13 +1,12 @@
 import requests as r
 import finnhub
-#import json        Not needed for now
 import wget
 from datetime import date, datetime, timedelta
 import pandas as pd
 import time
-#from tabulate import tabulate     Not needed for now
 import traceback
 import os
+import re
 from warnings import simplefilter 
 simplefilter(action="ignore", category=pd.errors.PerformanceWarning)
 ## Ignores the warnings raised by pandas when adding financial data columns to the data dataframe
@@ -168,14 +167,14 @@ class SortData: ## Used to get the historical data necessary
     def _rename_cols(self, df, time_diff): ## Calls the above function in order to properly rename the columns
         df.rename(columns={
             'T': 'ticker', ## To be removed 
-            'c': self._add_time_diff('close_price', time_diff), 
-            'h': self._add_time_diff('highest_price', time_diff),
-            'l': self._add_time_diff('lowest_price', time_diff),
-            'n': self._add_time_diff('num_transactions', time_diff),
-            'o': self._add_time_diff('open_price', time_diff),
-            't': self._add_time_diff('unix_timestamp', time_diff), ## To be removed
-            'v': self._add_time_diff('trading_volume', time_diff),
-            'vw': self._add_time_diff('trading_volume_weighted', time_diff)
+            'c': self._add_time_diff('_close_price', time_diff), 
+            'h': self._add_time_diff('_highest_price', time_diff),
+            'l': self._add_time_diff('_lowest_price', time_diff),
+            'n': self._add_time_diff('_num_transactions', time_diff),
+            'o': self._add_time_diff('_open_price', time_diff),
+            't': self._add_time_diff('_unix_timestamp', time_diff), ## To be removed
+            'v': self._add_time_diff('_trading_volume', time_diff),
+            'vw': self._add_time_diff('_trading_volume_weighted', time_diff)
         }, inplace=True)
 
         return df
@@ -228,7 +227,7 @@ class SortData: ## Used to get the historical data necessary
 
         try:
             financials_data = self.data_class.get_financials(ticker)['metric']
-            if len(financials_data) < 80: 
+            if len(financials_data) < 100: 
                 print('Not sufficient data')
                 return None ## Including things that have less than 100 financial metrics would discount too many financial metrics and tickers
                 ## returning None should trigger code to remove the ticker from the dataframe
@@ -251,20 +250,9 @@ class SortData: ## Used to get the historical data necessary
             raise Exception('Something went wrong with downloading the VIX History')
         
         else:
-            time_offset = 730 ## Fix for adding 1 day to earliest_date, which was giving an error for some reason
-                              ## Subtract one every time the while loop is run
             df = pd.read_csv('VIX_History.csv')
             print(df['DATE'])
 
-            while True: ## Loop gets broken out of once the earliest possible date is found
-                earliest_date = str((date.today() - timedelta(days=time_offset)).strftime('%m/%d/%Y')) ## Starts at 2 years + 1 day before, consistent with polygon data
-                print(f'\n{earliest_date}')
-                if earliest_date in set(df['DATE']):
-                    slicing_index = self._get_index_by_row(df, 'DATE', earliest_date)
-                    break
-                time_offset -= 1
-
-            df = df[slicing_index:] ## Slices the dataframe so that it only contains data from the last 2 years
             df['DATE'] = df['DATE'].str.replace('/', '-') ## Makes sure dates are in a consistent format
             df['DATE'] = pd.to_datetime(df['DATE'], format='%m-%d-%Y').dt.strftime('%Y-%m-%d') ## Chagnes the date format fof consistency
 
@@ -278,6 +266,7 @@ class SortData: ## Used to get the historical data necessary
         ## TODO Write tests (lame)
 
         queries = self._build_daily_agg_query()
+        print(queries[0]['date'])
         query_start_index = 0
         query_end_index = 4
 
@@ -290,27 +279,41 @@ class SortData: ## Used to get the historical data necessary
 
         ## Get the VIX historical data, add it to the df at the end
         vix_data = self.make_vix_call()
+        time_offset = 730 ## Fix for adding 1 day to earliest_date, which was giving an error for some reason
+                          ## Subtract one every time the while loop is run
+        while True: ## Loop gets broken out of once the earliest possible date is found
+            earliest_date = str((date.today() - timedelta(days=time_offset)).strftime('%Y-%m-%d')) ## Starts at 2 years before, consistent with polygon data
+            print(f'\n{earliest_date}')
+            if earliest_date in set(vix_data['DATE']):
+                slicing_index = self._get_index_by_row(vix_data, 'DATE', earliest_date)
+                break
+            time_offset -= 1
+
+        vix_data = vix_data[slicing_index:] ## Slices the VIX data so that it only includes necessary dates
         market_open_dates = vix_data['DATE'].tolist()
-        ## TODO filter queries so that only dates in market_open_dates are included
-        ## TODO reverse the list of queries at the end, so that market days can be counted using i in the for loop
 
         for query in queries: ## Queries are in format {date: YYYY-MM-DD, adjusted: bool}
             if query['date'] not in set(market_open_dates): ## Checks to see if the market is NOT open on the given date
                 queries.remove(query)
+        queries = queries[::-1] ## The list is reversed to have more recent dates first
 
-        while query_end_index < 100: ## len(queries)
+        polygon_done = False
+        finnhub_done = False
+
+        while not (polygon_done and finnhub_done): ## Runs until all of the data has been fetched
 
             ## Call the polygon API data, add it to the df
             for i in range(query_start_index, query_end_index+1):
                 polygon_data = self.make_polygon_call(queries[i], i)
                 if polygon_data is None or polygon_data.empty: continue ## Skips over weekends/holidays where there is no data to be collected
-                ## ! Should be deprecated when I add market day counting based on VIX History
+                ## ! Should be removed when I add market day counting based on VIX History
                 elif data_df.empty:
                     data_df = polygon_data.copy() 
                     continue
                 else:
                     data_df = self._merge_on_tickers(data_df, polygon_data)
-        
+                
+            if i > len(queries): polygon_done = True
 
             ## Call the finnhub API, add it to the df
             ## On first iteration of the while loop (when query_start_index == 0), when making the financial data, first fill everything with None
@@ -340,6 +343,12 @@ class SortData: ## Used to get the historical data necessary
 
                 for col in df_cols: ## This for loop adds the recently fetched data to the dataframe
                     data_df.at[i - i_offset, col] = financial_data.at[0, col]
+
+                if data_df['10DayAverageTradingVolume'].iloc[-1] != None: 
+                    finnhub_done = True ## I'm pretty sure that column is in every response, so it's a good one to measure if we're done, since it won't be removed
+                    break ## Break since we're done
+
+                
             
                 
             query_start_index += 5
@@ -354,10 +363,11 @@ class SortData: ## Used to get the historical data necessary
         vix_data = vix_data[::-1].reset_index() ## Reverses the dataframe to make counting market days easier
         for index, row in vix_data.iterrows(): ## Index not needed
             ## Set the same value for each ticker
-            data_df[f'vix_open_{index}_market_days_before'] = [row['OPEN'] for _ in range(len(data_df))]
-            data_df[f'vix_close_{index}_marketdays_before'] = [row['CLOSE'] for _ in range(len(data_df))]
-            data_df[f'vix_high_{index}_market_days_before'] = [row['HIGH'] for _ in range(len(data_df))]
-            data_df[f'vix_low_{index}_market_days_before'] = [row['LOW'] for _ in range(len(data_df))]
+            data_df[f'_vix_open_{index+1}_market_days_before'] = [row['OPEN'] for _ in range(len(data_df))]
+            data_df[f'_vix_close_{index+1}_marketdays_before'] = [row['CLOSE'] for _ in range(len(data_df))]
+            data_df[f'_vix_high_{index+1}_market_days_before'] = [row['HIGH'] for _ in range(len(data_df))]
+            data_df[f'_vix_low_{index+1}_market_days_before'] = [row['LOW'] for _ in range(len(data_df))]
+            ## Index is +1 because the VIX data doesn't include the data for the current day
 
 
             
@@ -367,10 +377,108 @@ class SortData: ## Used to get the historical data necessary
         print(len(data_df))
         #for col in data_df.columns:
             #print(f'{col}: {data_df[col].isna().sum()}')
+        ## TODO Add code that checks for columns that have None, if they have too many NoneTypes, remove the column (see how many get removed)
+        return data_df
         
 
-        ## TODO Write functions for getting today's info for adding to df (might involve refactoring other methods)
-        ## TODO Write code that considers what happens if the financial data still needs to be fetched but the historical data is done (should be an easy conditional) (or vice versa)
         ## TODO Write a diagnostic function that finds what filtering condition for amount of financial data results in the least loss
 
-        ## TODO for functions getting today's info, consider how to handle cases where there is extra data not in the working df, or missing data
+    def _find_integers(self, string):
+        indexes = [re.search(r'\d', string).start()] ## Get the index of the first integer in the string
+            ## Index is a list so that if the number has multiple digits, the index of other digits can be added to the list
+        for i in range(1, 6): ## 6 is just used as a placeholder. Realistically, the differences in dates won't get greater than 5 digits
+            if string[indexes[0]+i] in {'0','1','2','3','4','5','6','7','8','9'}: ## Checks if the next character is an integer, search is O(1)
+                indexes.append(indexes[0]+i)
+            else: break ## Once the last digit has been found, break out of the loop
+        return indexes
+
+    def _change_time_diff(self, col, ):
+        index = self._find_integers(col)
+        num_value = int(col[index[0]:index[-1]+1]) + 1 ## Represents the numerical value we found, +1 to add the date as needed
+        new_string = f'{col[:index[0]]}{str(num_value)}{col[index[-1]+1:]}' ## Assigns the new string
+        return new_string
+    
+    def _remove_oldest_historical(self, df): ## Removes the historical columns that have the highest # of market days from current date, for the working_df
+        cols = [[col for col in df.columns if col[0] == '_']] ## Get all historical columns
+        highest_value = 0
+        for col in cols:
+            indexes = self._find_integers(col)
+            num_value = int(col[indexes[0]:indexes[-1]+1]) ## Store the value of the integer in the string as an integer
+            if num_value > highest_value: ## Assign the highest value to the value found if it is greater
+                highest_value = num_value
+
+        for col in cols:
+            if str(highest_value) in col: ## Drop the column if that furthest date is in the column name
+                df.drop(col, axis=1, inplace=True)
+
+        ## I know this is really bad in terms of time complexity, but given that there aren't a ton of points to go through, it doesn't matter a ton
+        ## I also can't think of another way to do it right now (listening to mr williams lecture)
+        return df
+
+
+
+
+
+    def get_todays_data(self, df): ## df should be the current working df
+        ## ? This should only be called on days that the market is open
+        ## Should return 2 dataframes: one with all historical data ever, one with same # of columns as original (drop the furthest date from price and vix history)
+        all_time_df = df.copy() ## All historical data ever collected
+        working_df = df.copy() ## Maintains # of columns and market day count
+
+        for col in df.cols:
+            if col[0] == '_': ## Ever wonder why the VIX and historical data column names are prepended by _ ? This is why!
+                all_time_df.rename(columns={col: self.get_todays_data(col)})
+                working_df.rename(columns={col: self.get_todays_data(col)})
+
+
+        vix_data = self.make_vix_call().iloc[-1].reset_index() ## Get the most recent update to the VIX dataset
+        ## Set the same value for each ticker
+        ## TODO Test this code to make sure it works
+        all_time_df[f'_vix_open_1_market_days_before'] = [vix_data['OPEN'] for _ in range(len(all_time_df))]
+        all_time_df[f'_vix_close_1_marketdays_before'] = [vix_data['CLOSE'] for _ in range(len(all_time_df))]
+        all_time_df[f'_vix_high_1_market_days_before'] = [vix_data['HIGH'] for _ in range(len(all_time_df))]
+        all_time_df[f'_vix_low_1_market_days_before'] = [vix_data['LOW'] for _ in range(len(all_time_df))]
+
+        working_df[f'_vix_open_1_market_days_before'] = [vix_data['OPEN'] for _ in range(len(all_time_df))]
+        working_df[f'_vix_close_1_marketdays_before'] = [vix_data['CLOSE'] for _ in range(len(all_time_df))]
+        working_df[f'_vix_high_1_market_days_before'] = [vix_data['HIGH'] for _ in range(len(all_time_df))]
+        working_df[f'_vix_low_1_market_days_before'] = [vix_data['LOW'] for _ in range(len(all_time_df))]
+        ## Index is +1 because the VIX data doesn't include the data for the current day
+
+        polygon_data = self.make_polygon_call(str(date.today()), 1) 
+        all_time_df = self._merge_on_tickers(all_time_df, polygon_data)
+        working_df = self._merge_on_tickers(working_df, polygon_data)
+
+        ## TODO I need to test this to make sure it works
+        finnhub_done = False
+        df_cols = [col for col in df.columns if col[0] != '_'] ## Add all of the financial columns to this list
+        while not finnhub_done:
+            for i in range(financial_start_index, financial_end_index):
+                ticker = df.at[i, 'ticker'] ## Gets the current ticker to work on
+                financial_data = self.make_finnhub_call(ticker)
+                if financial_data is None: ## Just move on, and the data for this ticker will be None
+                    continue
+                elif i  == 0: ## Better way of checking for first iteration, fixes bug where first round of collected data was reset to Noe
+                    for column in df_cols: ## Reset the financial data
+                        all_time_df[column] = [None for _ in range(len(df))]
+                        working_df[column] = [None for _ in range(len(df))]
+
+                for col in df_cols: ## This for loop adds the recently fetched data to the dataframe
+                    if col not in set(financial_data.columns): ## Skip over data that we don't actually have for the current ticker, so it stays as None
+                        continue
+                    all_time_df.at[i, col] = financial_data.at[0, col] ## No need for i_offset here since no tickers will be removed
+                    working_df.at[i, col] = financial_data.at[0, col] 
+
+                if i == len(df): ## Checks to see if we are done with getting all the new financial data
+                    finnhub_done = True
+                    break ## Break since we're done
+
+            
+            financial_start_index += 60
+            financial_end_index += 60
+
+            time.sleep(60)
+
+        working_df = self._remove_oldest_historical(working_df)
+        return all_time_df, working_df
+
