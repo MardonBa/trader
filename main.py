@@ -1,6 +1,5 @@
 import get_realtime_prices
 from  historical_data import GetData, SortData
-import pandas as pd
 
 polygon_api_key, finnhub_api_key = 'Sl2fNRJQfFgu9Z6jS5vNmVzJ9zvnM1hP', 'cluhrs1r01qv6nfuall0cluhrs1r01qv6nfuallg'
 
@@ -8,7 +7,6 @@ data = GetData(polygon_api_key, finnhub_api_key) ## Instance of the GetData clas
 
 data_sorted = SortData(data)
 data_sorted.get_and_sort_initial_data()
-
 
 """
 3 models to be trained right now:

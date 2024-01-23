@@ -78,15 +78,17 @@ class GetData:
                 call_type = 'daily'
 
             api_call = self._create_api_call(query, params, call_type)
-            response = r.get(api_call).json() ## remove .json() when errors come up to see status code
-            return response
-        
+            response = r.get(api_call) ## remove .json() when errors come up to see status code
+            if response.ok:
+                return response.json()
+            else:
+                return None
+            
     def get_financials(self, ticker):
         
         financials = self.finnhub_client.company_basic_financials(ticker, 'all')
         ## Gets basic financial data
         ## The data not stored in the dictionary mapped to metric won't be used due to inconsistency in the time-frames represented
-
         return financials
     
     def get_vix_history(self):
@@ -133,7 +135,6 @@ class SortData: ## Used to get the historical data necessary
                 'date': single_date, 
                 'adjusted': 'true'  ## String for the future api call
                 })
-        
         return queries
     
 
@@ -180,8 +181,6 @@ class SortData: ## Used to get the historical data necessary
         return df
     
     def _merge_on_tickers(self, df1, df2): 
-        print(df1)
-        print(df2)
         common_tickers = set.union(set(df1['ticker']), set(df2['ticker']))
 
         for ticker in df1['ticker']:
@@ -228,7 +227,6 @@ class SortData: ## Used to get the historical data necessary
         try:
             financials_data = self.data_class.get_financials(ticker)['metric']
             if len(financials_data) < 100: 
-                print('Not sufficient data')
                 return None ## Including things that have less than 100 financial metrics would discount too many financial metrics and tickers
                 ## returning None should trigger code to remove the ticker from the dataframe
 
@@ -239,7 +237,6 @@ class SortData: ## Used to get the historical data necessary
             print(f'error: {traceback.format_exc()}')
             ## This might be necessary later when it gets to where Finnhub doesn't have data for a ticker, so handling that case
             ## Haven't hit that in tests so far, so it's just here and empty for now
-        print('it worked')
         return df
     
 
@@ -251,7 +248,6 @@ class SortData: ## Used to get the historical data necessary
         
         else:
             df = pd.read_csv('VIX_History.csv')
-            print(df['DATE'])
 
             df['DATE'] = df['DATE'].str.replace('/', '-') ## Makes sure dates are in a consistent format
             df['DATE'] = pd.to_datetime(df['DATE'], format='%m-%d-%Y').dt.strftime('%Y-%m-%d') ## Chagnes the date format fof consistency
@@ -266,7 +262,6 @@ class SortData: ## Used to get the historical data necessary
         ## TODO Write tests (lame)
 
         queries = self._build_daily_agg_query()
-        print(queries[0]['date'])
         query_start_index = 0
         query_end_index = 4
 
@@ -283,7 +278,6 @@ class SortData: ## Used to get the historical data necessary
                           ## Subtract one every time the while loop is run
         while True: ## Loop gets broken out of once the earliest possible date is found
             earliest_date = str((date.today() - timedelta(days=time_offset)).strftime('%Y-%m-%d')) ## Starts at 2 years before, consistent with polygon data
-            print(f'\n{earliest_date}')
             if earliest_date in set(vix_data['DATE']):
                 slicing_index = self._get_index_by_row(vix_data, 'DATE', earliest_date)
                 break
@@ -295,7 +289,13 @@ class SortData: ## Used to get the historical data necessary
         for query in queries: ## Queries are in format {date: YYYY-MM-DD, adjusted: bool}
             if query['date'] not in set(market_open_dates): ## Checks to see if the market is NOT open on the given date
                 queries.remove(query)
+
+
+    
         queries = queries[::-1] ## The list is reversed to have more recent dates first
+        if str(date.today() == queries[0]): 
+            queries.remove(queries[0])
+
 
         polygon_done = False
         finnhub_done = False
@@ -318,15 +318,15 @@ class SortData: ## Used to get the historical data necessary
             ## Call the finnhub API, add it to the df
             ## On first iteration of the while loop (when query_start_index == 0), when making the financial data, first fill everything with None
             for i in range(financial_start_index, financial_end_index):
-                print(i)
-                print(i_offset)
+                #print(i)
+                #print(i_offset)
                 print(i-i_offset)
-                ticker = data_df.at[i, 'ticker'] ## Gets the current ticker to work on
+                ticker = data_df.at[i-i_offset, 'ticker'] ## Gets the current ticker to work on
                 financial_data = self.make_finnhub_call(ticker)
                 if financial_data is None: 
                     i_offset += 1
                     ticker_index = self._get_index_by_row(data_df, 'ticker', ticker) ## Drop the ticker since it won't have any data
-                    data_df.drop(ticker_index, axis=0).reset_index().drop('index', axis=1, inplace=True) ## resetting index and dropping index col fixes issues where dropped rows affect the offset, etc
+                    data_df = data_df.drop(ticker_index, axis=0).reset_index().drop('index', axis=1) ## resetting index and dropping index col fixes issues where dropped rows affect the offset, etc
                     continue
                 if i - i_offset == 0: ## Better way of checking for first iteration, fixes bug where first round of collected data was reset to Noe
                     for key in financial_data.keys():
@@ -355,7 +355,7 @@ class SortData: ## Used to get the historical data necessary
             query_end_index += 5
             financial_start_index += 60
             financial_end_index += 60
-
+            print('sleeping...')
             time.sleep(60)
         
        
@@ -378,6 +378,7 @@ class SortData: ## Used to get the historical data necessary
         #for col in data_df.columns:
             #print(f'{col}: {data_df[col].isna().sum()}')
         ## TODO Add code that checks for columns that have None, if they have too many NoneTypes, remove the column (see how many get removed)
+        data_df.to_csv('historical_data.csv')
         return data_df
         
 
@@ -392,7 +393,7 @@ class SortData: ## Used to get the historical data necessary
             else: break ## Once the last digit has been found, break out of the loop
         return indexes
 
-    def _change_time_diff(self, col, ):
+    def _change_time_diff(self, col):
         index = self._find_integers(col)
         num_value = int(col[index[0]:index[-1]+1]) + 1 ## Represents the numerical value we found, +1 to add the date as needed
         new_string = f'{col[:index[0]]}{str(num_value)}{col[index[-1]+1:]}' ## Assigns the new string
@@ -476,7 +477,6 @@ class SortData: ## Used to get the historical data necessary
             
             financial_start_index += 60
             financial_end_index += 60
-
             time.sleep(60)
 
         working_df = self._remove_oldest_historical(working_df)

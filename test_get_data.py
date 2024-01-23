@@ -1,6 +1,8 @@
 import unittest
+from unittest.mock import Mock, patch
 from historical_data import GetData
 from datetime import date, timedelta
+from nose.tools import asse
 
 
 class TestGetDataMethods(unittest.TestCase):
@@ -137,6 +139,22 @@ class TestGetDataMethods(unittest.TestCase):
 
         with self.assertRaises(KeyError):
             self.get_data_class._create_api_call(query, params, self.call_type)
+
+
+    ########################################
+    ## The following methods GetData().get_polygon_data(query, agg)
+    ########################################
+
+    @patch('')
+    def test_get_polygon_data_daily_open_close(self): # When agg=False, meaning it isn't an aggregate
+        query = {
+            'ticker': 'AAPL',
+            'date': str(date.today()), ## Gets the current date
+            'adjusted': 'true'
+        }
+        agg = False
+
+
 
     
 
